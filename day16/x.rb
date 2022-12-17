@@ -8,26 +8,26 @@ class NodesList
   end
 end
 
-class ChildrenForNode
-  attr_accessor :shadows
-  def initialize(nodesList)
-    @nodesList = nodesList
-    @shadows = {}
+class Item
+  attr_accessor :timeLeft, :nodeName, :state, :score, :fromNodeName
+  def initialize(timeLeft, nodeName, state, score, fromNodeName)
+    @timeLeft = timeLeft
+    @nodeName = nodeName
+    @state = state # hash of opened node names
+    @score = score
+    @fromNodeName = fromNodeName
   end
-  def get_children(node)
-    if !shadows.has_key?(node.name)
-      shadows[node.name] = node.children.map {|name| @nodesList.nodes[name] }
-    end
-    shadows[node.name]
+
+  def to_s
+    "<Item T:#{timeLeft}, #{nodeName} score:#{score}, calledFrom:#{fromNodeName}>"
   end
+    
 end
 
 class Node
   attr_reader :gain, :children, :name, :nodeChildren
   attr_accessor :childNodes, :visited, :considering
   def initialize(name, children, gain)
-    @visited = false
-    @considering = false
     @name = name
     @children = children
     @gain = gain
@@ -36,37 +36,10 @@ class Node
   def to_s
     "<Node #{name}, children: #{children}, gain: #{gain}"
   end
-
-  def bestChoice(timeLeft)
-    childNodes = $nodeTable.get_children(self)
-    puts "Getting best choice for #{name}"
-    freeNodes = childNodes.reject {|node| node.visited || node.considering } # (&:visited)
-    retPacket = ['', 0, 0, 0]
-    if timeLeft <= 1
-      return ['', 0, 0, 0]
-    elsif timeLeft == 2
-      return ['', 2, gain, 1]
-    end
-    if freeNodes.size == 0
-      return [name, 1, gain * (timeLeft - 1), 1]
-    end
-    maxPayback = -1
-    freeNodes.each do |childNode|
-      childNode.considering = true
-      _, costThere, rawPayback, costBack = childNode.bestChoice(timeLeft - 1)
-      payback = rawPayback
-      if maxPayback < payback
-        retPacket = [childNode.name, costThere + 1, payback * (timeLeft - 2), costBack + 1]
-      end
-      childNode.considering = false
-    end
-    return retPacket
-  end
 end
 
 
 nodeList = NodesList.new
-$nodeTable = ChildrenForNode.new(nodeList)
 
 i = 1
 ARGF.each do |line|
@@ -78,9 +51,77 @@ ARGF.each do |line|
 end
 
 require 'PP'
-pp nodeList.nodes.map(&:to_s)
+#pp nodeList.nodes.map(&:to_s)
 
 startNode = nodeList.nodes['AA']
-startNode.considering = true
-childChoice = startNode.bestChoice(30)
-puts childChoice
+$nodeList = nodeList
+
+def nodeIsDone(nodeName, state, fromNodeNames)
+  if fromNodeNames.include?(nodeName)
+    # Found a circular list
+    return false
+  end
+  node = $nodeList.nodes[nodeName]
+  children = node.children - [nodeName]
+  if children.size == 0 && (node.gain == 0 || state.has_key?(nodeName))
+    return 0
+  end
+  children.each do |childName|
+    child = $nodeList.nodes[childName]
+    if !nodeIsDone(childName, state, fromNodeNames + [nodeName])
+      return false
+    end
+  end
+  return true
+end
+
+def stateKey(timeStamp, nodeName, state)
+  return "T:#{timeStamp}, N:#{nodeName}, V:#{state.sort.map{|e| e.join(":")}.join(",")}"
+end  
+
+deque = [Item.new(30, "AA", {}, 0, nil)]
+dp = {} # Map <time><sorted-node-name><score> => <total-score>
+numberNodesProcessed = 0
+maxScore = 0
+while deque.size > 0
+  item = deque.shift
+  numberNodesProcessed += 1
+  puts item.to_s
+  if maxScore < item.score
+    maxScore = item.score
+  end
+  timeLeft = item.timeLeft
+  if timeLeft <= 2
+    # No point pushing children that won't have any effect (1 to move, 1 to open)
+    next
+  end
+  nodeName = item.nodeName
+  skey = stateKey(timeLeft, nodeName, item.state)
+
+  if dp.has_key?(skey)
+    next
+  else
+    dp[skey] = item.score
+  end
+
+  node = nodeList.nodes[nodeName]
+  children = node.children # Also names
+  
+  if !item.state.has_key?(nodeName) && node.gain > 0
+    newState = item.state.clone
+    newState[nodeName] = timeLeft - 1
+    newScore = node.gain * (timeLeft - 1) + item.score
+    node.children.each do |childName|
+      deque.push(Item.new(timeLeft - 2, childName, newState, newScore, nodeName))
+    end
+  end
+
+  # And go to other nodes without doing anything here.
+  node.children.each do |childName|
+    next if childName == item.fromNodeName
+    deque.push(Item.new(timeLeft - 1, childName, item.state, item.score, nodeName))
+  end
+end
+
+puts "maxScore: #{maxScore}"
+puts "numberNodesProcessed: #{numberNodesProcessed}"
